@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.isitannarli"
-version = "1.0.0"
+version = "1.0.1"
 
 allprojects {
     tasks.withType<Jar>().configureEach {
