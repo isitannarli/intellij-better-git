@@ -2,7 +2,7 @@
 
 Release history for Better Git.
 
-## 1.0.1 — Unreleased
+## 1.0.1 — 2026-10-19
 
 ### Fixed
 
