@@ -13,6 +13,7 @@ Release history for Better Git.
 
 ### Fixed
 
+- Size the sidebar change-count badge icon from its base icon so scaled badges keep the expected dimensions.
 - Use a monochrome Commit Graph tool-window icon with light and dark theme variants.
 - Replace ambiguous graph glyphs with theme-aware icons and explicit file labels; count configured remotes correctly and exclude symbolic remote HEAD aliases from branch counts.
 - Save IDE documents before branch and stash operations, and refresh file and repository state after successful or partially failed Git commands.
