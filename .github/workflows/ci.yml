@@ -1,0 +1,85 @@
+name: Build and verify
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      verify_compatibility:
+        description: Download and verify against WebStorm, GoLand and Rider
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+      - name: Test core and IDE integration, then package plugin
+        run: ./gradlew :core:test :test verifyPluginProjectConfiguration buildPlugin --stacktrace --no-daemon
+      - name: Upload installable plugin
+        uses: actions/upload-artifact@v7
+        with:
+          name: intellij-better-git
+          path: build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            build/reports/tests/
+            build/test-results/
+            core/build/reports/tests/
+            core/build/test-results/
+          retention-days: 14
+
+  compatibility:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_compatibility
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-read-only: true
+      - name: Verify all configured IDEs
+        run: ./gradlew verifyPlugin --stacktrace --no-daemon
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-verifier-reports
+          path: build/reports/pluginVerifier/
+          retention-days: 14

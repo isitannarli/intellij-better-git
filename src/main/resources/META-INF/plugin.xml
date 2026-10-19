@@ -1,0 +1,62 @@
+<idea-plugin>
+  <id>dev.bettergit</id>
+  <name>Better Git</name>
+  <vendor>isitannarli</vendor>
+  <description><![CDATA[
+    <p>A focused Git workspace for JetBrains IDEs. Explore repositories, inspect line authorship,
+    browse commit history and review GitHub pull requests and GitLab merge requests.</p>
+    <p>Native, theme-aware UI. Reuses existing global Git credentials; no new account required.</p>
+    <p>Free and open source, licensed under the <a href="https://opensource.org/license/mit">MIT License</a>.
+    Source project: intellij-better-git.</p>
+  ]]></description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.vcs</depends>
+  <depends>Git4Idea</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="Better Git" anchor="left" secondary="false" icon="/icons/betterGit.svg"
+                factoryClass="dev.bettergit.ui.BetterGitToolWindowFactory"/>
+    <toolWindow id="Better Git Graph" anchor="bottom" icon="/icons/commitGraph.svg"
+                factoryClass="dev.bettergit.ui.graph.CommitGraphToolWindowFactory"/>
+    <applicationConfigurable id="dev.bettergit.settings" parentId="vcs"
+                             displayName="Better Git" instance="dev.bettergit.settings.BetterGitConfigurable"/>
+    <postStartupActivity implementation="dev.bettergit.editor.BetterGitStartupActivity"/>
+    <postStartupActivity implementation="dev.bettergit.services.RepositoryMonitor"/>
+    <checkinHandlerFactory implementation="dev.bettergit.services.CommitMessageCheck"/>
+    <notificationGroup id="Better Git" displayType="BALLOON"/>
+  </extensions>
+  <actions>
+    <action id="BetterGit.GenerateCommitMessage" class="dev.bettergit.actions.GenerateCommitMessageAction"
+            text="Better Git: Generate Commit Message with AI" icon="/icons/aiCommit.svg"
+            description="Draft a commit message from included changes with Ollama, OpenAI, Gemini or Claude">
+      <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+    </action>
+    <action id="BetterGit.InspectLine" class="dev.bettergit.actions.InspectLineAction"
+            text="Better Git: Inspect Line Commit" description="Inspect the commit that last changed this line">
+      <override-text place="EditorPopup" text="Inspect Line Commit"/>
+      <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt G" second-keystroke="ctrl alt L"/>
+      <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt G" second-keystroke="meta alt L"/>
+    </action>
+    <action id="BetterGit.FileHistory" class="dev.bettergit.actions.FileHistoryAction" text="Better Git: File History">
+      <override-text place="EditorPopup" text="File History"/>
+    </action>
+    <action id="BetterGit.SelectionHistory" class="dev.bettergit.actions.SelectionHistoryAction"
+            text="Better Git: Selection History" description="See who changed the selected code, when, and how"/>
+    <action id="BetterGit.ToggleBlame" class="dev.bettergit.actions.ToggleBlameAction" text="Better Git: Toggle Inline Blame"/>
+    <action id="BetterGit.ToggleHeatmap" class="dev.bettergit.actions.ToggleHeatmapAction" text="Better Git: Toggle File Age Heatmap">
+      <override-text place="EditorPopup" text="Toggle File Age Heatmap"/>
+    </action>
+    <group id="BetterGit.EditorPopup" text="Better Git" popup="true" icon="/icons/betterGit.svg"
+           description="Inspect code history and line authorship with Better Git">
+      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+      <reference ref="BetterGit.InspectLine"/>
+      <reference ref="BetterGit.FileHistory"/>
+      <reference ref="BetterGit.SelectionHistory"/>
+      <reference ref="BetterGit.ToggleHeatmap"/>
+    </group>
+    <action id="BetterGit.Annotate" class="dev.bettergit.actions.AnnotateAction" text="Better Git: Annotate File"/>
+    <action id="BetterGit.OpenGraph" class="dev.bettergit.actions.OpenCommitGraphAction"
+            text="Better Git: Open Commit Graph" icon="/icons/commitGraph.svg"
+            description="Open the bottom commit graph with branches, changes and activity"/>
+    <action id="BetterGit.Open" class="dev.bettergit.actions.OpenBetterGitAction" text="Better Git: Open Workspace"/>
+  </actions>
+</idea-plugin>
