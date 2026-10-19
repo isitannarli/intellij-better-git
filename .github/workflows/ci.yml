@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       verify_compatibility:
-        description: Download and verify against WebStorm, GoLand and Rider
+        description: Download and verify against IntelliJ IDEA, WebStorm, GoLand and Rider
         type: boolean
         default: false
 

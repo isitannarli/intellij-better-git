@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.isitannarli"
-version = "1.0.0"
+version = "1.0.1"
 
 allprojects {
     tasks.withType<Jar>().configureEach {
@@ -59,6 +59,7 @@ intellijPlatform {
             if (localVerificationList.isPresent) localVerificationList.get().split('|').forEach { local(it) }
             else if (localVerification.isPresent) local(localVerification.get())
             else {
+                create(IntelliJPlatformType.IntellijIdea, "2026.2.3")
                 create(IntelliJPlatformType.WebStorm, "2026.2.3")
                 create(IntelliJPlatformType.GoLand, "2026.2.3")
                 create(IntelliJPlatformType.Rider, "2026.2.3.1")
