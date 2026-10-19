@@ -45,7 +45,7 @@ Better Git brings your code’s history into focus with visual commit graphs, in
   Native IDE components, compact layouts, and colors that adapt to your theme.
 
 - **Privacy**
-  Core Git views use local data and require no Better Git account. Optional avatars and reviews use external services; cloud AI sends the previewed diff only when you generate. API keys can be stored in IDE PasswordSafe.
+  We do not collect or store your source code, repository history, credentials, or usage data through Better Git. The plugin runs locally in your IDE, and external integrations communicate directly with the relevant service. No Better Git account is required. Author photos are enabled by default and can send author email addresses to GitHub/GitLab; you can disable them in settings. Reviews use hosting APIs, and cloud AI sends the previewed diff only when you generate. API keys can be stored in IDE PasswordSafe. See the [Privacy Policy](PRIVACY.md) for details.
 
 ## Compatibility
 
