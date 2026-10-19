@@ -6,7 +6,7 @@ Release history for Better Git.
 
 ### Fixed
 
-- Size the sidebar change-count badge icon from its base icon so scaled badges keep the expected dimensions.
+- Size the sidebar change-count badge icon from its base icon so scaled badges keep the expected dimensions, keeping the crisp SVG rendering wherever the platform scales it correctly.
 
 ## 1.0.0 — 2026-10-19
 

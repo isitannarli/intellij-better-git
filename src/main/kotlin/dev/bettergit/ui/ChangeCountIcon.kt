@@ -1,6 +1,7 @@
 package dev.bettergit.ui
 
 import com.intellij.openapi.util.ScalableIcon
+import com.intellij.util.IconUtil
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.Color
@@ -20,9 +21,11 @@ internal class ChangeCountIcon(
     val count: Int,
     private val factor: Float = 1f,
 ) : ScalableIcon {
-    // Size and paint from the base icon directly: platform icon scaling does not report a scaled size everywhere.
     private val width = (baseIcon.iconWidth * factor).roundToInt()
     private val height = (baseIcon.iconHeight * factor).roundToInt()
+    // Prefer the platform's crisp SVG rendering; it does not report a scaled size everywhere, so keep it only when it does.
+    private val delegate = ((baseIcon as? ScalableIcon)?.scale(factor) ?: IconUtil.scale(baseIcon, null, factor))
+        .takeIf { it.iconWidth == width && it.iconHeight == height }
     val badgeText: String = if (count > 99) "99+" else count.toString()
 
     override fun getScale() = factor
@@ -33,13 +36,16 @@ internal class ChangeCountIcon(
     override fun getIconHeight() = height
 
     override fun paintIcon(component: Component?, graphics: Graphics, x: Int, y: Int) {
-        val base = graphics.create() as Graphics2D
-        try {
-            base.translate(x, y)
-            base.scale(factor.toDouble(), factor.toDouble())
-            baseIcon.paintIcon(component, base, 0, 0)
-        } finally {
-            base.dispose()
+        if (delegate != null) delegate.paintIcon(component, graphics, x, y)
+        else {
+            val base = graphics.create() as Graphics2D
+            try {
+                base.translate(x, y)
+                base.scale(factor.toDouble(), factor.toDouble())
+                baseIcon.paintIcon(component, base, 0, 0)
+            } finally {
+                base.dispose()
+            }
         }
         val g = graphics.create() as Graphics2D
         try {
