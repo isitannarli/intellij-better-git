@@ -2,6 +2,7 @@ package dev.bettergit.ui
 
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.project.InitialVfsRefreshService
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
@@ -16,6 +17,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import git4idea.repo.GitRepositoryManager
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -31,6 +33,9 @@ class WorkingChangesBadgeTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        // Light projects do not run every project-opening activity. The untracked-file queue
+        // waits for this lifecycle phase even when the tracked change-list scan is ready.
+        project.getService(InitialVfsRefreshService::class.java).runInitialVfsRefresh()
         root = Files.createTempDirectory("better-git-badge-").toRealPath()
         VfsRootAccess.allowRootAccess(testRootDisposable, root.toString())
         command("init", "--initial-branch=main")
@@ -94,6 +99,25 @@ class WorkingChangesBadgeTest : BasePlatformTestCase() {
         assertEquals(window.id, window.stripeTitle)
     }
 
+    fun testUntrackedFilesAddedAndRemovedAfterTrackedRefreshUpdateTheHiddenBadge() {
+        Files.writeString(root.resolve("tracked.txt"), "modified\n")
+        refreshChanges()
+        awaitCount(1)
+
+        Files.createDirectories(root.resolve("later/nested"))
+        val added = root.resolve("later/nested/new.txt")
+        Files.writeString(added, "untracked\n")
+        Files.writeString(root.resolve("ignored.txt"), "ignored\n")
+        refreshChanges()
+        awaitCount(2)
+
+        Files.delete(added)
+        refreshChanges()
+        awaitCount(1)
+        assertFalse(window.isVisible)
+        assertEquals(0, window.contentManager.contentCount)
+    }
+
     fun testDeletedFileIsIncluded() {
         Files.delete(root.resolve("deleted.txt"))
         refreshChanges()
@@ -130,6 +154,11 @@ class WorkingChangesBadgeTest : BasePlatformTestCase() {
         VcsDirtyScopeManager.getInstance(project).dirDirtyRecursively(virtualRoot)
         PlatformTestUtil.callOnBgtSynchronously({
             ChangeListManagerImpl.getInstanceImpl(project).ensureUpToDate()
+            // Git scans untracked/ignored files independently of the tracked change-list refresh.
+            // NIO writes in this fixture must not depend on asynchronous VFS event delivery.
+            val repository = requireNotNull(GitRepositoryManager.getInstance(project).getRepositoryForRoot(virtualRoot))
+            repository.untrackedFilesHolder.invalidate()
+            repository.untrackedFilesHolder.retrieveUntrackedFilePaths()
         }, 30)
     }
 

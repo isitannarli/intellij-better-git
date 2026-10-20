@@ -30,6 +30,7 @@ Release history for Better Git.
 
 ### Fixed
 
+- Wait for both tracked and untracked Git refreshes in sidebar badge integration tests, avoiding a Linux CI race when new files arrive in nested folders.
 - Open changed files and diff previews through the stable navigation API to avoid deprecated editor-opening calls on IntelliJ IDEA 2026.3 EAP while retaining 2024.3 support.
 - Keep hovered Changes rows inside the panel and wrap file tooltips to the available width.
 
