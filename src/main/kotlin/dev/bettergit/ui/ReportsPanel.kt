@@ -1,7 +1,6 @@
 package dev.bettergit.ui
 
 import com.intellij.openapi.fileChooser.FileChooserFactory
-import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -63,7 +62,7 @@ class ReportsPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.s
     private fun export() {
         val path = root ?: return
         val target = FileChooserFactory.getInstance().createSaveFileDialog(
-            FileSaverDescriptor("Export Git activity report", "Save the currently loaded repository activity", "html"), project,
+            ReportFileSaver.create("Export Git activity report", "Save the currently loaded repository activity", "html"), project,
         ).save("${path.fileName}-activity.html") ?: return
         val html = buildString {
             append("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Git activity</title>")

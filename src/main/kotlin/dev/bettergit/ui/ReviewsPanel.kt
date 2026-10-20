@@ -2,7 +2,7 @@ package dev.bettergit.ui
 
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.testFramework.LightVirtualFile
@@ -128,7 +128,7 @@ class ReviewsPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.s
         diffJob = service.submit("Load review changes", onSuccess = { patch ->
             if (disposed || generation != expected) return@submit
             val file = LightVirtualFile("${repo.name}-${review.number}.diff", patch).apply { isWritable = false }
-            FileEditorManager.getInstance(project).openFile(file, true)
+            OpenFileDescriptor(project, file).navigate(true)
         }) { client.diff(repo, review.number, credentials.token(repo)) }
     }
 

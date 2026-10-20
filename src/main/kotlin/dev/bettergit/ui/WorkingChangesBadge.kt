@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 /** Follows the IDE's cached local changes even before the tool-window content is opened. */
 internal class WorkingChangesBadge private constructor(private val toolWindow: ToolWindow) : Disposable {
     private val project = toolWindow.project
-    private val baseIcon = toolWindow.icon ?: IconLoader.getIcon("/icons/betterGit.svg", javaClass)
+    private val baseIcon = toolWindow.icon ?: IconLoader.getIcon("/icons/workingChanges.svg", javaClass)
     private val baseTitle = toolWindow.stripeTitle
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var lastCount = -1

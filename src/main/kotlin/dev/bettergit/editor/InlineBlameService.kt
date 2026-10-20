@@ -64,7 +64,10 @@ class InlineBlameService(private val project: Project) : Disposable {
         val appConnection = com.intellij.openapi.application.ApplicationManager.getApplication().messageBus.connect(this)
         appConnection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { refreshAll() })
         appConnection.subscribe(FileDocumentManagerListener.TOPIC, object : FileDocumentManagerListener {
-            override fun afterDocumentSaved(document: com.intellij.openapi.editor.Document) = refreshAll(document)
+            override fun beforeDocumentSaving(document: Document) {
+                // Run after the save completes; the after-save callback is absent in older IDEs.
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater { refreshAll(document) }
+            }
             override fun fileContentReloaded(
                 file: com.intellij.openapi.vfs.VirtualFile,
                 document: com.intellij.openapi.editor.Document,

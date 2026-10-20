@@ -4,10 +4,32 @@ import dev.bettergit.core.git.GitCommit
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import java.time.Instant
 
 class CommitGraphTest {
+    @Test
+    fun `wide graph keeps edge destinations valid as lanes collapse`() {
+        val parents = (0 until 600).map { "branch-$it" }
+        val commits = listOf(commit("merge", *parents.toTypedArray())) + parents.map { commit(it, "root") } + commit("root")
+        val rows = CommitGraph.layout(commits)
+        assertEquals(600, rows.first().lanes)
+        assertEquals(1, rows.last().lanes)
+        assertEquals(parents.indices.toList(), rows.first().edges.map { it.to })
+        assertValidCoordinates(rows)
+    }
+
+    @Test
+    fun `cancelled graph preparation stops promptly`() {
+        Thread.currentThread().interrupt()
+        try {
+            assertThrows(java.util.concurrent.CancellationException::class.java) {
+                CommitGraph.layout(listOf(commit("tip", "root")))
+            }
+        } finally { Thread.interrupted() }
+    }
+
     @Test
     fun `empty history has no lanes`() {
         assertTrue(CommitGraph.layout(emptyList()).isEmpty())

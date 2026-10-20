@@ -79,7 +79,7 @@ class GitMutationService(private val project: Project, private val scope: Corout
 
     private fun refresh(root: Path) {
         if (project.isDisposed || !scope.isActive) return
-        VfsUtil.markDirtyAndRefresh(false, true, false, root)
+        VfsUtil.markDirtyAndRefresh(false, true, false, root.toFile())
         if (project.isDisposed || !scope.isActive) return
         val virtualRoot = LocalFileSystem.getInstance().findFileByNioFile(root) ?: return
         try {

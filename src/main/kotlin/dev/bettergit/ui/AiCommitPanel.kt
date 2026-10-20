@@ -1,50 +1,32 @@
 package dev.bettergit.ui
 
 import com.intellij.openapi.ide.CopyPasteManager
-import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.bettergit.core.ai.AiProvider
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.Font
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ActionEvent
 import javax.swing.AbstractAction
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JPasswordField
 import javax.swing.JProgressBar
 import javax.swing.KeyStroke
 import javax.swing.event.DocumentEvent
 
 internal data class AiCommitConfiguration(
     val provider: AiProvider,
-    val models: Map<AiProvider, String>,
+    val model: String,
     val localEndpoint: String,
     val style: String,
     val anthropicWorkspaceId: String,
 )
-
-internal data class AiCommitForm(
-    val provider: AiProvider,
-    val model: String,
-    val localEndpoint: String,
-    val style: String,
-    val apiKey: String,
-    val rememberKey: Boolean,
-    val anthropicWorkspaceId: String,
-) {
-    override fun toString() = "AiCommitForm(provider=$provider, apiKey=<redacted>)"
-}
 
 internal class AiCommitPanel(
     initial: AiCommitConfiguration,
@@ -56,35 +38,19 @@ internal class AiCommitPanel(
         fun generate()
         fun cancel()
         fun retryDiff()
-        fun inputChanged()
         fun outputEdited()
         fun apply(message: String)
-        fun forgetKey(provider: AiProvider)
+        fun settings()
     }
 
-    private val models = initial.models.toMutableMap()
-    private var currentProvider = initial.provider
+    private var configuration = initial
     private var updating = true
     private var generating = false
     private var diffLoading = false
     private var diffReady = false
-    private val provider = ComboBox(AiProvider.entries.toTypedArray()).apply {
-        selectedItem = initial.provider
-        renderer = Ui.renderer { label, value: AiProvider, _ -> label.text = value.displayName }
-        getAccessibleContext().accessibleName = "AI provider"
-    }
-    private val model = JBTextField(models[initial.provider] ?: initial.provider.defaultModel)
-    private val endpoint = JBTextField(initial.localEndpoint)
-    private val style = JBTextField(initial.style)
-    private val workspace = JBTextField(initial.anthropicWorkspaceId)
-    private val key = JPasswordField().apply {
-        getAccessibleContext().accessibleName = "API key for the selected provider"
-        toolTipText = "Leave blank to use the provider environment variable or a saved key."
-    }
-    private val remember = JBCheckBox("Remember this key in the IDE password store").apply { isSelected = false }
-    private val forget = Ui.button("Forget saved key", "Remove only this provider's saved key; environment variables are unchanged") {
-        listener.forgetKey(currentProvider)
-    }
+    private val configurationSummary = Ui.label("")
+    private val styleSummary = Ui.label("", true)
+    private val settings = Ui.button("Settings…", "Configure AI in Better Git settings") { listener.settings() }
     private val providerBadge = DashboardStyles.pill("LOCAL")
     private val notice = textArea(editable = false).apply {
         isFocusable = false
@@ -92,15 +58,6 @@ internal class AiCommitPanel(
         font = UIUtil.getLabelFont()
         border = JBUI.Borders.empty()
         getAccessibleContext().accessibleName = "Data destination and provider costs"
-    }
-    private val keyHelp = Ui.label("", true)
-    private val endpointField = field("Local Ollama endpoint", endpoint)
-    private val workspaceField = field("Anthropic workspace ID (optional)", workspace)
-    private val keyFields = JPanel(BorderLayout(0, JBUI.scale(5))).apply {
-        isOpaque = false
-        add(field("API key (optional here)", key), BorderLayout.NORTH)
-        add(keyHelp, BorderLayout.CENTER)
-        add(Ui.row(remember, forget).apply { isOpaque = false }, BorderLayout.SOUTH)
     }
     private val status = textArea(editable = false).apply {
         isFocusable = false
@@ -139,11 +96,11 @@ internal class AiCommitPanel(
     private val applyButton = Ui.button("Use in commit", "Place this draft in the captured commit message field; does not commit") {
         listener.apply(output.text)
     }.apply { isVisible = canApply }
-    val preferredFocus: JComponent get() = provider
+    val preferredFocus: JComponent get() = generate
 
     init {
-        preferredSize = Dimension(JBUI.scale(940), JBUI.scale(800))
-        minimumSize = Dimension(JBUI.scale(740), JBUI.scale(620))
+        preferredSize = Dimension(JBUI.scale(820), JBUI.scale(640))
+        minimumSize = Dimension(JBUI.scale(620), JBUI.scale(480))
         border = JBUI.Borders.empty(10)
         getAccessibleContext().accessibleName = "AI commit message composer"
         add(DashboardStyles.card(BorderLayout(0, JBUI.scale(10))).apply {
@@ -159,18 +116,12 @@ internal class AiCommitPanel(
             }, BorderLayout.NORTH)
             add(JPanel(BorderLayout(0, JBUI.scale(9))).apply {
                 isOpaque = false
-                add(JPanel(GridBagLayout()).apply {
+                add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
                     isOpaque = false
-                    add(field("Provider", provider), constraints(0, 0, 0.35))
-                    add(field("Model", model), constraints(1, 0, 0.65))
-                    add(field("Message style", style), constraints(0, 1, 0.35))
-                    add(JPanel(BorderLayout()).apply {
-                        isOpaque = false
-                        add(endpointField, BorderLayout.NORTH)
-                        add(workspaceField, BorderLayout.SOUTH)
-                    }, constraints(1, 1, 0.65))
+                    add(configurationSummary, BorderLayout.CENTER)
+                    add(settings, BorderLayout.EAST)
                 }, BorderLayout.NORTH)
-                add(keyFields, BorderLayout.CENTER)
+                add(styleSummary, BorderLayout.CENTER)
                 add(notice, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
@@ -188,28 +139,6 @@ internal class AiCommitPanel(
             add(status, BorderLayout.CENTER)
             add(Ui.row(generate, cancel, retry, applyButton, copy), BorderLayout.SOUTH)
         }, BorderLayout.SOUTH)
-        provider.addActionListener {
-            if (!updating) {
-                updating = true
-                models[currentProvider] = model.text.trim()
-                currentProvider = provider.selectedItem as AiProvider
-                model.text = models[currentProvider]?.takeIf(String::isNotBlank) ?: currentProvider.defaultModel
-                clearKey()
-                remember.isSelected = false
-                updating = false
-                updateProviderPresentation()
-                listener.inputChanged()
-            }
-        }
-        listOf(model, endpoint, style, workspace).forEach { input ->
-            input.document.addDocumentListener(object : DocumentAdapter() {
-                override fun textChanged(event: DocumentEvent) { if (!updating) listener.inputChanged() }
-            })
-        }
-        key.document.addDocumentListener(object : DocumentAdapter() {
-            override fun textChanged(event: DocumentEvent) { if (!updating) listener.inputChanged() }
-        })
-        remember.addActionListener { if (!updating) listener.inputChanged() }
         output.document.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(event: DocumentEvent) {
                 if (!updating) listener.outputEdited()
@@ -227,15 +156,13 @@ internal class AiCommitPanel(
         setDiffLoading()
     }
 
-    fun form(): AiCommitForm {
-        val characters = key.password
-        return try {
-            AiCommitForm(currentProvider, model.text.trim(), endpoint.text.trim(), style.text.trim(), String(characters),
-                remember.isSelected, workspace.text.trim())
-        } finally { characters.fill('\u0000') }
+    fun setConfiguration(value: AiCommitConfiguration): Boolean {
+        if (configuration == value) return false
+        configuration = value
+        updateProviderPresentation()
+        return true
     }
 
-    fun selectedProvider(): AiProvider = currentProvider
     fun draft(): String = output.text
 
     fun setDiffLoading() {
@@ -286,22 +213,20 @@ internal class AiCommitPanel(
 
     fun disposePanel() {
         updating = true
-        clearKey()
         progress.isIndeterminate = false
         generating = false
         diffLoading = false
     }
 
     private fun updateProviderPresentation() {
-        val local = currentProvider == AiProvider.OLLAMA
-        endpointField.isVisible = local
-        workspaceField.isVisible = currentProvider == AiProvider.CLAUDE
-        keyFields.isVisible = !local
-        providerBadge.text = if (local) "LOCAL · OLLAMA" else "CLOUD · ${currentProvider.displayName}"
-        keyHelp.text = "Blank uses ${currentProvider.environmentVariable ?: "the provider environment variable"}, then the IDE password store."
-        notice.text = if (local) "Generate uses your local Ollama installation. Only loopback endpoints and installed local models are accepted. The plugin is free; no account is needed."
-            else "Generate sends the previewed diff to ${currentProvider.displayName}. API usage may be billed by the provider. The plugin is free and does not require a plugin account."
-        workspace.toolTipText = "Optional Anthropic workspace identifier; leave blank unless your API configuration requires it."
+        val selected = configuration.provider
+        val local = selected == AiProvider.OLLAMA
+        providerBadge.text = if (local) "LOCAL · OLLAMA" else "CLOUD · ${selected.displayName}"
+        configurationSummary.text = "${selected.displayName} · ${clean(configuration.model)}"
+        configurationSummary.toolTipText = configurationSummary.text
+        styleSummary.text = "Message style: ${clean(configuration.style)}"
+        notice.text = if (local) "Generate uses your local Ollama installation and an installed local model."
+            else "Generate sends the previewed diff to ${selected.displayName}. API usage may be billed by the provider."
         revalidate()
         repaint()
     }
@@ -321,12 +246,6 @@ internal class AiCommitPanel(
         applyButton.isEnabled = canApply && output.text.isNotBlank() && !generating && !diffLoading
     }
 
-    private fun clearKey() {
-        val characters = key.password
-        characters.fill('\u0000')
-        key.text = ""
-    }
-
     companion object {
         private const val MAX_PREVIEW_CHARACTERS = 102_400
         private val CONTROLS = Regex("[\\p{Cntrl}\\p{Cf}]")
@@ -336,20 +255,6 @@ internal class AiCommitPanel(
             isEditable = editable
             lineWrap = true
             wrapStyleWord = true
-        }
-        private fun field(label: String, input: JComponent): JPanel = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-            isOpaque = false
-            add(Ui.label(label, true).apply { labelFor = input }, BorderLayout.NORTH)
-            add(input, BorderLayout.CENTER)
-            input.getAccessibleContext().accessibleName = label
-        }
-        private fun constraints(x: Int, y: Int, weight: Double) = GridBagConstraints().apply {
-            gridx = x
-            gridy = y
-            weightx = weight
-            fill = GridBagConstraints.HORIZONTAL
-            anchor = GridBagConstraints.NORTHWEST
-            insets = JBUI.insets(0, if (x == 0) 0 else 12, 9, 0)
         }
     }
 }

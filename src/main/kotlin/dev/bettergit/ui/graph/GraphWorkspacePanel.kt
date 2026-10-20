@@ -4,13 +4,13 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
 import com.intellij.openapi.ide.CopyPasteManager
-import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import dev.bettergit.core.git.GitCommit
 import dev.bettergit.services.AuthorAvatarService
 import dev.bettergit.services.RepositorySnapshot
 import dev.bettergit.services.WorkbenchService
 import dev.bettergit.settings.BetterGitSettings
+import dev.bettergit.settings.BetterGitConfigurable
 import dev.bettergit.ui.CommitDetails
 import dev.bettergit.ui.CommitHostingActions
 import dev.bettergit.ui.Ui
@@ -53,7 +53,7 @@ class GraphWorkspacePanel(private val project: Project) : JPanel(BorderLayout())
         override fun fetch() { fetchSelected() }
         override fun push() { Ui.nativeAction(project, this@GraphWorkspacePanel, "Vcs.Push") }
         override fun settings() {
-            ShowSettingsUtil.getInstance().showSettingsDialog(project, "Better Git")
+            BetterGitConfigurable.show(project)
             attempted.clear()
             if (!BetterGitSettings.getInstance().state.authorAvatars) { cancelAvatarWaiters(); view.clearAvatars() }
             else avatarTimer.restart()

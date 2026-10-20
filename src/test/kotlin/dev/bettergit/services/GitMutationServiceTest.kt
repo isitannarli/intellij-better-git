@@ -13,6 +13,8 @@ import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.bettergit.core.git.GitClient
+import dev.bettergit.ui.WorkingChangesPanel
+import dev.bettergit.ui.WorkingCommitPanel
 import git4idea.repo.GitRepository
 import git4idea.repo.GitRepositoryImpl
 import git4idea.repo.GitRepositoryManager
@@ -37,6 +39,7 @@ class GitMutationServiceTest : BasePlatformTestCase() {
         command("config", "user.email", "developer@example.test")
         command("config", "commit.gpgsign", "false")
         command("config", "core.autocrlf", "false")
+        command("config", "core.hooksPath", root.resolve(".git/hooks").toString())
         Files.writeString(root.resolve("file.txt"), "base\n")
         command("add", ".")
         command("commit", "-m", "Initial")
@@ -72,6 +75,123 @@ class GitMutationServiceTest : BasePlatformTestCase() {
         assertFalse(FileDocumentManager.getInstance().isDocumentUnsaved(document))
         assertEquals("base\n", virtualRoot.findChild("file.txt")!!.contentsToByteArray().toString(Charsets.UTF_8))
     }
+
+    fun testSelectedDiscardSavesThenRestoresEditorFromIndex() {
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", "file.txt")
+        Files.writeString(root.resolve("file.txt"), "working\n")
+        virtualRoot.refresh(false, true)
+        val selected = git.workingChanges(root)
+        val document = document()
+        edit(document, "unsaved working edit\n")
+
+        assertNull(mutate { git.discardChanges(root, selected) })
+
+        assertEquals("staged\n", document.text)
+        assertEquals("staged\n", command("show", ":file.txt"))
+        assertFalse(FileDocumentManager.getInstance().isDocumentUnsaved(document))
+    }
+
+    fun testInlineCommitSavesDocumentsCommitsOnlyIndexAndRefreshesRepository() {
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", ".")
+        val document = document()
+        edit(document, "unsaved working edit\n")
+        var completed = false
+        val panel = WorkingChangesPanel(project, { completed = true })
+        Disposer.register(testRootDisposable, panel)
+        panel.setRepository(RepositorySnapshot(root, git.status(root), emptyList()))
+        panel.setChanges(root, git.workingChanges(root))
+        val composer = descendants(panel).filterIsInstance<WorkingCommitPanel>().single()
+        composer.message = "fix: commit staged content"
+        descendants(composer).filterIsInstance<javax.swing.JButton>()
+            .single { it.accessibleContext.accessibleName == "Commit changes" }.doClick()
+        PlatformTestUtil.waitWithEventsDispatching("Inline commit did not finish", { completed }, 30)
+
+        assertEquals("staged\n", command("show", "HEAD:file.txt"))
+        assertEquals("unsaved working edit\n", document.text)
+        assertEquals(document.text, Files.readString(root.resolve("file.txt")))
+        assertEquals(command("rev-parse", "HEAD").trim(), repository.currentRevision)
+        assertEquals("", composer.message)
+    }
+
+    fun testInlineStageAllRequiresConfirmationAndKeepsDraftOnCancel() {
+        val document = document()
+        edit(document, "new content\n")
+        FileDocumentManager.getInstance().saveAllDocuments()
+        var completed = false
+        val panel = WorkingChangesPanel(project, { completed = true })
+        Disposer.register(testRootDisposable, panel)
+        panel.setRepository(RepositorySnapshot(root, git.status(root), emptyList()))
+        panel.setChanges(root, git.workingChanges(root))
+        val composer = descendants(panel).filterIsInstance<WorkingCommitPanel>().single()
+        val commit = descendants(composer).filterIsInstance<javax.swing.JButton>()
+            .single { it.accessibleContext.accessibleName == "Commit changes" }
+        composer.message = "fix: include working content"
+        com.intellij.openapi.ui.TestDialogManager.setTestDialog(com.intellij.openapi.ui.TestDialog.NO, testRootDisposable)
+        commit.doClick()
+        assertEquals("1", command("rev-list", "--count", "HEAD").trim())
+        assertFalse(completed)
+        assertEquals("fix: include working content", composer.message)
+        com.intellij.openapi.ui.TestDialogManager.setTestDialog(com.intellij.openapi.ui.TestDialog.YES, testRootDisposable)
+        commit.doClick()
+        PlatformTestUtil.waitWithEventsDispatching("Stage All and Commit did not finish", { completed }, 30)
+        assertEquals("new content\n", command("show", "HEAD:file.txt"))
+        assertEquals("", composer.message)
+    }
+
+    fun testInlineCommitKeepsDraftAndStagedContentWhenHookFails() {
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", ".")
+        val hook = root.resolve(".git/hooks/pre-commit")
+        Files.writeString(hook, "#!/bin/sh\necho 'Project checks failed' >&2\nexit 1\n")
+        assertTrue(hook.toFile().setExecutable(true))
+        var completed = false
+        val panel = WorkingChangesPanel(project, { completed = true })
+        Disposer.register(testRootDisposable, panel)
+        panel.setRepository(RepositorySnapshot(root, git.status(root), emptyList()))
+        panel.setChanges(root, git.workingChanges(root))
+        val composer = descendants(panel).filterIsInstance<WorkingCommitPanel>().single()
+        composer.message = "fix: retry after checks"
+        descendants(composer).filterIsInstance<javax.swing.JButton>()
+            .single { it.accessibleContext.accessibleName == "Commit changes" }.doClick()
+        PlatformTestUtil.waitWithEventsDispatching("Failed commit did not finish", { completed }, 30)
+        panel.setRepository(RepositorySnapshot(root, git.status(root), emptyList()))
+        panel.setChanges(root, git.workingChanges(root))
+
+        assertEquals("1", command("rev-list", "--count", "HEAD").trim())
+        assertEquals("fix: retry after checks", composer.message)
+        assertTrue(git.workingChanges(root).single().staged)
+        assertTrue(descendants(composer).filterIsInstance<javax.swing.JLabel>().any {
+            it.isVisible && it.toolTipText.orEmpty().contains("Project checks failed")
+        })
+    }
+
+    fun testInlineCommitHonorsConventionalCommitSetting() {
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", ".")
+        val settings = dev.bettergit.settings.BetterGitSettings.getInstance()
+        val previous = settings.state
+        try {
+            settings.loadState(previous.copy(conventionalCommits = true))
+            val panel = WorkingChangesPanel(project)
+            Disposer.register(testRootDisposable, panel)
+            panel.setRepository(RepositorySnapshot(root, git.status(root), emptyList()))
+            panel.setChanges(root, git.workingChanges(root))
+            val composer = descendants(panel).filterIsInstance<WorkingCommitPanel>().single()
+            composer.message = "Not a conventional subject"
+            descendants(composer).filterIsInstance<javax.swing.JButton>()
+                .single { it.accessibleContext.accessibleName == "Commit changes" }.doClick()
+            assertEquals("1", command("rev-list", "--count", "HEAD").trim())
+            assertEquals("Not a conventional subject", composer.message)
+            assertTrue(descendants(composer).filterIsInstance<javax.swing.JLabel>().any {
+                it.isVisible && it.toolTipText.orEmpty().contains("Conventional Commit")
+            })
+        } finally { settings.loadState(previous) }
+    }
+
+    private fun descendants(component: java.awt.Component): List<java.awt.Component> = listOf(component) +
+        if (component is java.awt.Container) component.components.flatMap(::descendants) else emptyList()
 
     fun testRefusedDocumentSavePreventsGitMutation() {
         val document = document()

@@ -67,6 +67,8 @@ class PluginIntegrationTest : BasePlatformTestCase() {
     }
 
     fun testSettingsExtensionCreatesUsableConfigurable() {
+        val path = com.intellij.openapi.options.ex.ConfigurableExtensionPointUtil.getConfigurablePath(BetterGitConfigurable::class.java, project)
+        assertTrue("Better Git must appear under Version Control: $path", path.contains("Version Control"))
         val extension = Configurable.APPLICATION_CONFIGURABLE.extensionList.single { it.id == "dev.bettergit.settings" }
         val configurable = requireNotNull(extension.createConfigurable())
         assertInstanceOf(configurable, BetterGitConfigurable::class.java)

@@ -21,7 +21,7 @@ class WorkspaceLayoutState : PersistentStateComponent<WorkspaceLayoutState.Optio
         options.selectedTab = id
     }
     companion object {
-        val IDS = setOf("overview", "working", "history", "workflow", "insights", "branches", "reviews", "reports")
+        val IDS = setOf("working", "history", "workflow", "insights", "branches", "reviews", "reports")
         fun getInstance(project: Project): WorkspaceLayoutState = project.service()
     }
 }

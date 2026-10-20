@@ -94,6 +94,193 @@ class WorkingChangesTest {
         assertTrue(changes[3].untracked)
     }
 
+    @Test fun `stage and unstage literal paths without touching other files`() {
+        val literal = ":(glob)* space\nfile.txt"
+        Files.writeString(root.resolve(literal), "new\n")
+        Files.writeString(root.resolve("other.txt"), "other\n")
+        git.stageChanges(root, listOf(git.workingChanges(root).single { it.path == literal }))
+        assertTrue(git.workingChanges(root).single { it.path == literal }.staged)
+        assertTrue(git.workingChanges(root).single { it.path == "other.txt" }.untracked)
+        Files.writeString(root.resolve(literal), "newer working edit\n")
+        git.unstageChanges(root, listOf(git.workingChanges(root).single { it.path == literal }))
+        assertTrue(git.workingChanges(root).all { it.untracked })
+        assertEquals("newer working edit\n", Files.readString(root.resolve(literal)))
+    }
+
+    @Test fun `discard restores index content and leaves staged edits and other files intact`() {
+        initialFiles()
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", "file.txt")
+        Files.writeString(root.resolve("file.txt"), "unstaged\n")
+        Files.writeString(root.resolve("other.txt"), "unrelated\n")
+        git.discardChanges(root, listOf(git.workingChanges(root).single { it.path == "file.txt" }))
+        assertEquals("staged\n", Files.readString(root.resolve("file.txt")))
+        assertEquals("staged\n", command("show", ":file.txt"))
+        assertEquals("unrelated\n", Files.readString(root.resolve("other.txt")))
+        assertFalse(git.workingChanges(root).single { it.path == "file.txt" }.unstaged)
+    }
+
+    @Test fun `stage renamed working edit then unstage restores both rename paths`() {
+        initialFiles()
+        command("mv", "file.txt", "renamed.txt")
+        Files.writeString(root.resolve("renamed.txt"), "initial\nextra\n")
+        git.stageChanges(root, listOf(git.workingChanges(root).single()))
+        assertFalse(git.workingChanges(root).single().unstaged)
+        git.unstageChanges(root, git.workingChanges(root))
+        assertTrue(git.workingChanges(root).none { it.staged })
+        assertEquals("initial\n", command("show", ":file.txt"))
+        assertEquals("initial\nextra\n", Files.readString(root.resolve("renamed.txt")))
+    }
+
+    @Test fun `selected stash includes staged working and literal untracked files only`() {
+        initialFiles()
+        val literal = ":(glob)* space\nfile.txt"
+        Files.writeString(root.resolve("file.txt"), "staged\n")
+        command("add", "file.txt")
+        Files.writeString(root.resolve("file.txt"), "working\n")
+        Files.writeString(root.resolve(literal), "new\n")
+        Files.writeString(root.resolve("other.txt"), "unrelated staged\n")
+        command("add", "other.txt")
+        git.stashChanges(root, git.workingChanges(root).filter { it.path != "other.txt" }, "Selected changes")
+        assertEquals("working\n", command("show", "stash@{0}:file.txt"))
+        assertEquals("staged\n", command("show", "stash@{0}^2:file.txt"))
+        assertEquals("new\n", command("show", "stash@{0}^3:$literal"))
+        assertEquals("initial\n", Files.readString(root.resolve("file.txt")))
+        assertFalse(Files.exists(root.resolve(literal)))
+        assertEquals("unrelated staged\n", command("show", ":other.txt"))
+        assertEquals(listOf("other.txt"), git.workingChanges(root).map { it.path })
+    }
+
+    @Test fun `selected stash handles both sides of a staged rename`() {
+        initialFiles()
+        command("mv", "file.txt", "renamed.txt")
+        git.stashChanges(root, git.workingChanges(root), "Rename")
+        assertTrue(git.workingChanges(root).isEmpty())
+        assertTrue(Files.exists(root.resolve("file.txt")))
+        assertFalse(Files.exists(root.resolve("renamed.txt")))
+        assertEquals("initial\n", command("show", "stash@{0}:renamed.txt"))
+    }
+
+    @Test fun `stashing a staged deletion excludes other modified and untracked files`() {
+        initialFiles()
+        command("rm", "file.txt")
+        Files.writeString(root.resolve("other.txt"), "keep this edit\n")
+        Files.writeString(root.resolve("untracked.txt"), "keep this new file\n")
+        git.stashChanges(root, listOf(git.workingChanges(root).single { it.path == "file.txt" }), "Deletion")
+        assertEquals("initial\n", Files.readString(root.resolve("file.txt")))
+        assertEquals("keep this edit\n", Files.readString(root.resolve("other.txt")))
+        assertEquals("keep this new file\n", Files.readString(root.resolve("untracked.txt")))
+        assertEquals("other\n", command("show", "stash@{0}:other.txt"))
+        assertEquals(setOf("other.txt", "untracked.txt"), git.workingChanges(root).map { it.path }.toSet())
+    }
+
+    @Test fun `delete removes only selected file and symlink entries leaving index and link target intact`() {
+        initialFiles()
+        val external = Files.createTempFile("better-git-delete-", ".txt")
+        try {
+            Files.writeString(external, "outside\n")
+            Files.createSymbolicLink(root.resolve("link"), external)
+            Files.writeString(root.resolve("file.txt"), "edited\n")
+            git.deleteWorkingFiles(root, git.workingChanges(root))
+            assertFalse(Files.exists(root.resolve("file.txt")))
+            assertFalse(Files.exists(root.resolve("link"), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            assertEquals("outside\n", Files.readString(external))
+            assertEquals("initial\n", command("show", ":file.txt"))
+            assertTrue(Files.exists(root.resolve("other.txt")))
+            git.discardChanges(root, git.workingChanges(root))
+            assertEquals("initial\n", Files.readString(root.resolve("file.txt")))
+        } finally { Files.deleteIfExists(external) }
+    }
+
+    @Test fun `mutations reject stale selection unsafe paths and untracked discard`() {
+        initialFiles()
+        Files.writeString(root.resolve("new.txt"), "untracked\n")
+        val selected = git.workingChanges(root)
+        assertThrows(IllegalArgumentException::class.java) { git.discardChanges(root, selected) }
+        git.stageChanges(root, selected)
+        assertThrows(IllegalArgumentException::class.java) { git.deleteWorkingFiles(root, selected) }
+        for (path in listOf("../outside", ".git/config", ":(top)/outside", "/outside")) {
+            assertThrows(IllegalArgumentException::class.java) { git.stageChanges(root, listOf(WorkingChange(path, untracked = true))) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { git.stashChanges(root, emptyList(), "Empty") }
+    }
+
+    @Test fun `line totals distinguish staged and working content and update without status changes`() {
+        Files.writeString(root.resolve("code.kt"), "one\ntwo\nthree\n")
+        command("add", "."); command("commit", "-m", "initial")
+        Files.writeString(root.resolve("code.kt"), "one\ntwo edited\nthree\nfour\n")
+        command("add", ".")
+        Files.writeString(root.resolve("code.kt"), "one\ntwo edited\nfour\n")
+        val first = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(2, 1), first.stagedStats["code.kt"])
+        assertEquals(FileLineStats(0, 1), first.workingStats["code.kt"])
+        Files.writeString(root.resolve("code.kt"), "one\ntwo edited\nfour\nfive\nsix\n")
+        val second = git.workingChangesWithStats(root)
+        assertEquals(first.changes, second.changes)
+        assertEquals(FileLineStats(2, 1), second.workingStats["code.kt"])
+        assertEquals(first.stagedStats, second.stagedStats)
+    }
+
+    @Test fun `line totals support new files empty files missing final newline and binary files`() {
+        val literal = ":(glob)* new\nwith\ttabs.txt"
+        Files.writeString(root.resolve(literal), "one\r\ntwo")
+        Files.writeString(root.resolve("empty.txt"), "")
+        Files.write(root.resolve("binary.dat"), byteArrayOf(1, 0, 2))
+        val untracked = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(2, 0), untracked.workingStats[literal])
+        assertEquals(FileLineStats(0, 0), untracked.workingStats["empty.txt"])
+        assertTrue(untracked.workingStats.getValue("binary.dat").binary)
+        command("add", ".")
+        val staged = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(2, 0), staged.stagedStats[literal])
+        assertEquals(FileLineStats(0, 0), staged.stagedStats["empty.txt"])
+        assertTrue(staged.stagedStats.getValue("binary.dat").binary)
+        assertTrue(staged.workingStats.isEmpty())
+    }
+
+    @Test fun `rename deletion and mode-only totals preserve path and stage boundaries`() {
+        val old = "old\tname.txt"
+        val renamed = "new\nname.txt"
+        Files.writeString(root.resolve(old), "one\ntwo\nthree\n")
+        command("add", "."); command("commit", "-m", "initial")
+        command("mv", old, renamed)
+        var snapshot = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(0, 0), snapshot.stagedStats[renamed])
+        Files.delete(root.resolve(renamed))
+        snapshot = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(0, 3), snapshot.workingStats[renamed])
+        command("add", "--all")
+        snapshot = git.workingChangesWithStats(root)
+        assertEquals(FileLineStats(0, 3), snapshot.stagedStats[old])
+        command("reset", "--hard", "HEAD")
+        command("update-index", "--chmod=+x", "--", old)
+        assertEquals(FileLineStats(0, 0), git.workingChangesWithStats(root).stagedStats[old])
+    }
+
+    @Test fun `untracked line totals do not follow symlinks or read oversized files`() {
+        val outside = Files.createTempFile("better-git-line-count-", ".txt")
+        try {
+            Files.writeString(outside, "outside\ncontents\n")
+            Files.createSymbolicLink(root.resolve("link"), outside)
+            Files.write(root.resolve("large"), ByteArray(8 * 1024 * 1024 + 1) { 65 })
+            val snapshot = git.workingChangesWithStats(root)
+            assertEquals(FileLineStats(1, 0), snapshot.workingStats["link"])
+            assertNull(snapshot.workingStats["large"])
+        } finally { Files.deleteIfExists(outside) }
+    }
+
+    @Test fun `numstat parser consumes rename paths and keeps literal tabs newlines and binary markers`() {
+        val output = "5\t2\t\u0000old\tpath\u0000new\npath\u0000-\t-\tbinary\u00000\t0\tmode\u0000"
+        assertEquals(mapOf("new\npath" to FileLineStats(5, 2), "binary" to FileLineStats(null, null), "mode" to FileLineStats(0, 0)), GitNumstatParser.parse(output))
+        assertThrows(IllegalArgumentException::class.java) { GitNumstatParser.parse("1\t2\t\u0000missing-target\u0000") }
+    }
+
+    private fun initialFiles() {
+        Files.writeString(root.resolve("file.txt"), "initial\n")
+        Files.writeString(root.resolve("other.txt"), "other\n")
+        command("add", "."); command("commit", "-m", "initial")
+    }
+
     private fun command(vararg args: String): String {
         val process = ProcessBuilder(listOf("git", "-c", "core.hooksPath=${root.resolve(".git/disabled-hooks")}", "-C", root.toString()) + args)
             .redirectErrorStream(true).apply {

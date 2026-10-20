@@ -25,6 +25,9 @@ object AiCredentials {
     @RequiresBackgroundThread
     fun forget(provider: AiProvider) = resolver.forget(provider)
 
+    @RequiresBackgroundThread
+    fun store(provider: AiProvider, key: String) = resolver.store(provider, key)
+
     private fun attributes(provider: AiProvider) = CredentialAttributes(generateServiceName("Better Git AI", provider.name))
 }
 
@@ -42,7 +45,7 @@ internal class AiCredentialResolver(
             return entered
         }
         provider.environmentVariable?.let { name -> checked(environment(name))?.let { return it } }
-        val stored = vault("Cannot read the saved API key. Enter a key for this request or check the IDE password store.") { read(provider) }
+        val stored = vault("Cannot read the saved API key. Check Better Git settings and the IDE password store.") { read(provider) }
         checkCancellation()
         return checked(stored)
     }
@@ -50,6 +53,13 @@ internal class AiCredentialResolver(
     fun forget(provider: AiProvider) {
         checkCancellation()
         if (provider != AiProvider.OLLAMA) vault("Cannot remove this API key from the IDE password store.") { write(provider, null) }
+    }
+
+    fun store(provider: AiProvider, key: String) {
+        checkCancellation()
+        require(provider != AiProvider.OLLAMA) { "Ollama does not require an API key." }
+        val value = requireNotNull(checked(key)) { "Enter an API key to save." }
+        vault("Cannot store the API key. Check the IDE password store and apply again.") { write(provider, value) }
     }
 
     private fun checked(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)?.also {

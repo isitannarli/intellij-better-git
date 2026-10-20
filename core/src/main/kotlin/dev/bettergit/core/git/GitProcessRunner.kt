@@ -24,6 +24,7 @@ internal class GitProcessRunner(private val executable: String) {
         acceptedExitCodes: Set<Int> = setOf(0),
         timeout: Duration = Duration.ofSeconds(30),
         literalPathspecs: Boolean = true,
+        enableHooks: Boolean = false,
     ): GitOutput {
         if (Thread.currentThread().isInterrupted) throw CancellationException("Git operation cancelled")
         val operation = arguments.firstOrNull() ?: "command"
@@ -39,8 +40,8 @@ internal class GitProcessRunner(private val executable: String) {
                     "-c", "core.fsmonitor=false",
                     "-c", "core.askPass=",
                     "-c", "diff.suppressBlankEmpty=false",
-                    "-c", "core.hooksPath=$disabledHooksDirectory",
                     "-c", "protocol.ext.allow=never",
+                ) + (if (enableHooks) emptyList() else listOf("-c", "core.hooksPath=$disabledHooksDirectory")) + listOf(
                     "-C", root.toAbsolutePath().normalize().toString(),
                 ) + arguments,
             ).apply {

@@ -8,6 +8,7 @@ import dev.bettergit.core.ai.CommitMessageRequest
 import dev.bettergit.services.AiCredentials
 import dev.bettergit.services.WorkbenchService
 import dev.bettergit.settings.AiCommitSettings
+import dev.bettergit.settings.BetterGitConfigurable
 import kotlinx.coroutines.Job
 import java.net.URI
 import java.nio.file.Path
@@ -23,24 +24,25 @@ class AiCommitDialog(
     private var diff: String? = null
     private var job: Job? = null
     private var diffJob: Job? = null
-    private var keyJob: Job? = null
     private var generation = 0L
     private var diffGeneration = 0L
     private var closed = false
-    private val panel = AiCommitPanel(configuration(), scopeLabel, applyMessage != null, object : AiCommitPanel.Listener {
+    private val panel: AiCommitPanel = AiCommitPanel(configuration(), scopeLabel, applyMessage != null, object : AiCommitPanel.Listener {
         override fun generate() = generateDraft()
         override fun cancel() = cancelOperation()
         override fun retryDiff() = loadDiff()
-        override fun inputChanged() {
-            if (job?.isActive == true) cancelGeneration("Configuration changed. Generate again with the selected provider.")
-        }
         override fun outputEdited() = Unit
         override fun apply(message: String) {
             if (!closed && !project.isDisposed && message.isNotBlank() && applyMessage?.invoke(message) == true) {
                 close(OK_EXIT_CODE)
             }
         }
-        override fun forgetKey(provider: AiProvider) = forget(provider)
+        override fun settings() {
+            if (closed || project.isDisposed) return
+            cancelGeneration("Configure AI in Better Git settings, then generate a new draft.")
+            BetterGitConfigurable.show(project)
+            if (!closed && !project.isDisposed) panel.setConfiguration(configuration())
+        }
     })
 
     init {
@@ -73,7 +75,7 @@ class AiCommitDialog(
                 snapshot.isBlank() -> "No text changes are included. Select or stage changes, then reopen the composer."
                 bytes > CommitMessageGenerator.MAX_DIFF_BYTES -> "The selected diff exceeds 100 KiB. Include a smaller change and reopen the composer."
                 '\u0000' in snapshot -> "Binary data cannot be summarized. Select text changes and reopen the composer."
-                else -> "Preview the captured diff, choose a provider, then Generate draft."
+                else -> "Preview the captured diff, then Generate draft. Configure the provider in Better Git settings."
             })
         }, onFailure = {
             if (!closed && diffGeneration == expected) panel.diffFailed(it.message ?: "Cannot read the selected changes.")
@@ -83,9 +85,13 @@ class AiCommitDialog(
     private fun generateDraft() {
         val snapshot = diff ?: return
         if (closed || project.isDisposed) return
-        val form = panel.form()
+        val form = configuration()
+        if (panel.setConfiguration(form)) {
+            panel.showStatus("AI settings changed. Review the provider above, then choose Generate draft.")
+            return
+        }
         if (form.model.isBlank() || form.style.isBlank()) {
-            panel.showStatus("Enter a model ID and a message style before generating.")
+            panel.showStatus("Enter a model ID and a message style in Better Git settings before generating.")
             return
         }
         val endpoint = try {
@@ -96,7 +102,6 @@ class AiCommitDialog(
         }
         job?.cancel()
         val expected = ++generation
-        persist(form)
         panel.setGenerating(true, if (form.provider == AiProvider.OLLAMA) "Generating with the installed local model…"
             else "Generating with ${form.provider.displayName}; the previewed diff is sent to this provider…")
         job = WorkbenchService.getInstance(project).submit("Generate commit message", onSuccess = { message ->
@@ -104,19 +109,10 @@ class AiCommitDialog(
         }, onFailure = {
             if (!closed && generation == expected) panel.setGenerating(false, it.message ?: "AI generation failed. Check the selected provider.")
         }) {
-            val key = AiCredentials.resolve(form.provider, form.apiKey, form.rememberKey)
+            val key = AiCredentials.resolve(form.provider, "", false)
             CommitMessageGenerator().generate(CommitMessageRequest(form.provider, form.model, snapshot,
                 form.style, endpoint, key, form.anthropicWorkspaceId.takeIf(String::isNotBlank)))
         }
-    }
-
-    private fun forget(provider: AiProvider) {
-        keyJob?.cancel()
-        keyJob = WorkbenchService.getInstance(project).submit("Remove saved AI key", onSuccess = {
-            if (!closed && panel.selectedProvider() == provider) panel.showStatus("Saved key removed. Environment variables are unchanged.")
-        }, onFailure = {
-            if (!closed) panel.showStatus(it.message ?: "Cannot remove the saved key.")
-        }) { AiCredentials.forget(provider) }
     }
 
     private fun cancelGeneration(message: String? = null) {
@@ -141,33 +137,15 @@ class AiCommitDialog(
         ++diffGeneration
         job?.cancel()
         diffJob?.cancel()
-        keyJob?.cancel()
         panel.disposePanel()
         super.dispose()
-    }
-
-    private fun persist(form: AiCommitForm) {
-        AiCommitSettings.getInstance().state.apply {
-            provider = form.provider.name
-            when (form.provider) {
-                AiProvider.OLLAMA -> ollamaModel = form.model
-                AiProvider.OPENAI -> openaiModel = form.model
-                AiProvider.GEMINI -> geminiModel = form.model
-                AiProvider.CLAUDE -> claudeModel = form.model
-            }
-            localEndpoint = form.localEndpoint
-            style = form.style
-            anthropicWorkspaceId = form.anthropicWorkspaceId
-        }
     }
 
     companion object {
         private fun configuration(): AiCommitConfiguration {
             val settings = AiCommitSettings.getInstance().state
-            return AiCommitConfiguration(AiProvider.entries.firstOrNull { it.name == settings.provider } ?: AiProvider.OLLAMA,
-                mapOf(AiProvider.OLLAMA to settings.ollamaModel, AiProvider.OPENAI to settings.openaiModel,
-                    AiProvider.GEMINI to settings.geminiModel, AiProvider.CLAUDE to settings.claudeModel),
-                settings.localEndpoint, settings.style, settings.anthropicWorkspaceId)
+            val provider = settings.selectedProvider()
+            return AiCommitConfiguration(provider, settings.model(provider), settings.localEndpoint, settings.style, settings.anthropicWorkspaceId)
         }
     }
 }

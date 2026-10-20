@@ -29,6 +29,7 @@ data class RepositorySnapshot(val root: Path, val status: WorkingTreeStatus, val
 
 @Service(Service.Level.PROJECT)
 class WorkbenchService(private val project: Project, val scope: CoroutineScope) {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val workerDispatcher = Dispatchers.IO.limitedParallelism(4)
     val git: GitClient get() = GitClient(GitExecutableManager.getInstance().getPathToGit(project))
 

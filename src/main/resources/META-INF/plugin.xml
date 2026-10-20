@@ -13,11 +13,11 @@
   <depends>com.intellij.modules.vcs</depends>
   <depends>Git4Idea</depends>
   <extensions defaultExtensionNs="com.intellij">
-    <toolWindow id="Better Git" anchor="left" secondary="false" icon="/icons/betterGit.svg"
+    <toolWindow id="Better Git" anchor="left" secondary="false" icon="/icons/workingChanges.svg"
                 factoryClass="dev.bettergit.ui.BetterGitToolWindowFactory"/>
     <toolWindow id="Better Git Graph" anchor="bottom" icon="/icons/commitGraph.svg"
                 factoryClass="dev.bettergit.ui.graph.CommitGraphToolWindowFactory"/>
-    <applicationConfigurable id="dev.bettergit.settings" parentId="vcs"
+    <applicationConfigurable id="dev.bettergit.settings" parentId="project.propVCSSupport.Mappings"
                              displayName="Better Git" instance="dev.bettergit.settings.BetterGitConfigurable"/>
     <postStartupActivity implementation="dev.bettergit.editor.BetterGitStartupActivity"/>
     <postStartupActivity implementation="dev.bettergit.services.RepositoryMonitor"/>

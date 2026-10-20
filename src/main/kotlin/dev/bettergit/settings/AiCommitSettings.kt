@@ -19,7 +19,15 @@ class AiCommitSettings : PersistentStateComponent<AiCommitSettings.Options> {
         var localEndpoint: String = "http://127.0.0.1:11434",
         var style: String = "Conventional Commits",
         var anthropicWorkspaceId: String = "",
-    )
+    ) {
+        fun selectedProvider(): AiProvider = AiProvider.entries.firstOrNull { it.name == provider } ?: AiProvider.OLLAMA
+        fun model(provider: AiProvider): String = when (provider) {
+            AiProvider.OLLAMA -> ollamaModel
+            AiProvider.OPENAI -> openaiModel
+            AiProvider.GEMINI -> geminiModel
+            AiProvider.CLAUDE -> claudeModel
+        }
+    }
 
     private var options = Options()
     override fun getState(): Options = options

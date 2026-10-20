@@ -152,7 +152,7 @@ class JdkLocalAiTransport : LocalAiTransport {
     }
 }
 
-private fun localEndpoint(uri: URI): URI {
+fun localEndpoint(uri: URI): URI {
     val host = uri.host?.lowercase()
     val validIpv4 = host?.split('.')?.let { parts ->
         parts.size == 4 && parts.first() == "127" && parts.all { it.toIntOrNull() in 0..255 && it.all(Char::isDigit) }

@@ -1,46 +1,37 @@
 package dev.bettergit.ui
 
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.IconLoader
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.bettergit.core.reports.InsightsReport
 import dev.bettergit.services.HistorySnapshot
 import dev.bettergit.services.RepositorySnapshot
 import dev.bettergit.services.WorkbenchService
 import dev.bettergit.settings.BetterGitSettings
+import dev.bettergit.settings.BetterGitConfigurable
 import dev.bettergit.settings.WorkspaceLayoutState
-import git4idea.repo.GitRepository
-import git4idea.repo.GitRepositoryChangeListener
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import com.intellij.openapi.application.EDT
-import kotlinx.coroutines.Dispatchers
 import java.awt.BorderLayout
-import java.awt.Font
-import java.awt.GridLayout
+import java.awt.event.HierarchyEvent
 import java.nio.file.Path
-import javax.swing.Box
-import javax.swing.BoxLayout
+import javax.swing.JButton
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
 import javax.swing.JPanel
 
-class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
+class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.scale(2))), Disposable {
     private val service = WorkbenchService.getInstance(project)
     private val repositories = ComboBox<RepositorySnapshot>()
-    private val status = JBLabel("Discovering Git repositories…")
+    private val status = JBLabel("Syncing…")
     private val layoutState = WorkspaceLayoutState.getInstance(project)
     private var latestSnapshot: RepositorySnapshot? = null
-    private var overviewRendered: RepositorySnapshot? = null
     private val historyView = lazy { HistoryPanel(project) }
     private val history by historyView
     private val branchesView = lazy { BranchesPanel(project, ::refresh) }
@@ -56,19 +47,12 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     private val workflow by workflowView
     private val insightsView = lazy { InsightsPanel(project).also { Disposer.register(this, it) } }
     private val insights by insightsView
-    private val workingView = lazy { WorkingChangesPanel(project).also { Disposer.register(this, it) } }
+    private val workingView = lazy { WorkingChangesPanel(project, ::refresh, ::showRepositoryActions).also { Disposer.register(this, it) } }
     private val workingChanges by workingView
-    private val overviewView = lazy { ScrollableColumnPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); border = JBUI.Borders.empty(16) } }
-    private val overview by overviewView
     private var preparedHistory: HistorySnapshot? = null
     private val renderedHistoryTabs = mutableSetOf<String>()
     private val workspace = WorkspaceTabs(listOf(
-        WorkspaceTab("overview", "Overview", "Repository overview") { JBScrollPane(overview).apply {
-            border = JBUI.Borders.empty()
-            horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-            verticalScrollBar.unitIncrement = JBUI.scale(24)
-        } },
-        WorkspaceTab("working", "Changes", "Working changes") { workingChanges },
+        WorkspaceTab("working", "Changes", "Repository overview and working changes") { workingChanges },
         WorkspaceTab("history", "History", "Commit graph and history") { history },
         WorkspaceTab("workflow", "Workflow", "Branch and merge workflow") { workflow },
         WorkspaceTab("insights", "Insights", "Activity insights and heatmap") { insights },
@@ -83,7 +67,9 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     private var historyLoadedRoot: Path? = null
     private var refsLoadedRoot: Path? = null
     private var workingLoadedRoot: Path? = null
-    private var refreshDebounce: Job? = null
+    private val refreshQueue = RepositoryRefreshQueue()
+    private var workingReload = false
+    private val refreshListener: RepositoryRefreshListener
     private var insightsJob: Job? = null
     private var insightsLoadedRoot: Path? = null
     private var loadGeneration = 0L
@@ -93,37 +79,38 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     private var disposed = false
 
     init {
-        border = JBUI.Borders.empty(8, 0)
+        border = JBUI.Borders.empty()
         repositories.renderer = Ui.renderer { label, item: RepositorySnapshot, _ ->
-            label.text = "${item.name}  /  ${item.status.branch}"
+            label.icon = AllIcons.Vcs.BranchNode
+            label.text = "${item.status.branch}  ·  ${item.name}"
             label.toolTipText = item.root.toString()
         }
-        val header = JPanel(BorderLayout(0, JBUI.scale(10))).apply {
-            border = JBUI.Borders.empty(10, 16)
-            add(JPanel(BorderLayout()).apply {
-                add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-                    isOpaque = false
-                    add(Ui.label("").apply { icon = IconLoader.getIcon("/icons/betterGit.svg", BetterGitPanel::class.java) }, BorderLayout.WEST)
-                    add(JPanel(BorderLayout(0, JBUI.scale(2))).apply {
-                        isOpaque = false
-                        add(Ui.heading("Better Git"), BorderLayout.NORTH)
-                        add(DashboardStyles.eyebrow("YOUR LOCAL GIT WORKSPACE"), BorderLayout.SOUTH)
-                    }, BorderLayout.CENTER)
-                }, BorderLayout.WEST)
-                add(Ui.row(Ui.iconButton(AllIcons.Actions.Refresh, "Refresh local Git data") { refresh() }, Ui.iconButton(AllIcons.General.Settings, "Better Git settings") {
-                    ShowSettingsUtil.getInstance().showSettingsDialog(project, "Better Git")
-                }), BorderLayout.EAST)
-            }, BorderLayout.NORTH)
+        repositories.minimumSize = java.awt.Dimension(JBUI.scale(80), repositories.preferredSize.height)
+        repositories.toolTipText = "Select repository · current branch"
+        repositories.accessibleContext.accessibleName = "Repository and current branch"
+        status.foreground = Ui.muted
+        val header = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            border = JBUI.Borders.empty(4, 8)
             add(repositories, BorderLayout.CENTER)
-            add(status, BorderLayout.SOUTH)
+            add(JPanel(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
+                isOpaque = false
+                add(status)
+                add(WorkingChangesPanel.compactButton(AllIcons.Vcs.BranchNode, "Switch branch…") { workspace.select("branches") })
+                add(WorkingChangesPanel.compactButton(AllIcons.General.Settings, "Better Git settings") {
+                    BetterGitConfigurable.show(project)
+                    refresh()
+                })
+            }, BorderLayout.EAST)
         }
         add(header, BorderLayout.NORTH)
         add(workspace, BorderLayout.CENTER)
-        repositories.addActionListener { if (!updating) loadSelected() }
-        project.messageBus.connect(this).subscribe(GitRepository.GIT_REPO_CHANGE, GitRepositoryChangeListener {
-            refreshDebounce?.cancel()
-            refreshDebounce = service.scope.launch(Dispatchers.EDT) { delay(500); if (!disposed) refresh() }
-        })
+        repositories.addActionListener { if (!updating) loadSelected(RepositoryRefreshScope.REPOSITORY) }
+        refreshListener = RepositoryRefreshListener(project, ::requestRefresh).also { Disposer.register(this, it) }
+        addHierarchyListener { event ->
+            if (event.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
+                if (isShowing) drainRefresh() else suspendWork()
+            }
+        }
         refresh()
     }
 
@@ -135,12 +122,8 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     }
 
     private fun loadTab(id: String) {
+        if (disposed || !isShowing) return
         when (id) {
-            "overview" -> {
-                val snapshot = latestSnapshot
-                if (snapshot == null) renderEmptyOverview()
-                else if (snapshot !== overviewRendered) { renderOverview(snapshot); overviewRendered = snapshot }
-            }
             "history", "workflow", "reports" -> loadHistory()
             "working" -> loadWorkingChanges()
             "branches" -> loadRefs()
@@ -149,56 +132,83 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     }
 
     private fun refresh() {
-        refreshJob?.cancel()
-        status.text = "Refreshing local Git state…"
+        requestRefresh(RepositoryRefreshScope.REPOSITORY)
+    }
+
+    private fun requestRefresh(scope: RepositoryRefreshScope) {
+        if (disposed) return
+        refreshQueue.request(scope)
+        drainRefresh()
+    }
+
+    private fun drainRefresh() {
+        if (disposed) return
+        val scope = refreshQueue.take(isShowing) ?: return
+        val knownRepositories = (0 until repositories.itemCount).map(repositories::getItemAt)
+        status.toolTipText = "Syncing local Git state…"
         refreshJob = service.submit("Refresh repositories", onSuccess = { found ->
             if (disposed) return@submit
+            refreshJob = null
+            refreshQueue.finished()
+            refreshListener.setRoots(found.map { it.root })
             val previous = selectedRoot
             updating = true
             repositories.removeAllItems()
             found.forEach(repositories::addItem)
             found.firstOrNull { it.root == previous }?.let { repositories.selectedItem = it }
             updating = false
-            if (found.isEmpty()) showEmpty() else loadSelected()
-        }, onFailure = { status.text = it.message ?: "Could not read Git state. Check the IDE Git executable setting." }) { service.repositories() }
+            if (found.isEmpty()) showEmpty() else loadSelected(scope)
+            drainRefresh()
+        }, onFailure = {
+            refreshJob = null
+            refreshQueue.finished()
+            status.text = "Sync failed"
+            status.toolTipText = it.message ?: "Could not read Git state. Check the IDE Git executable setting."
+            drainRefresh()
+        }) {
+            if (scope == RepositoryRefreshScope.WORKTREE && knownRepositories.isNotEmpty()) {
+                val git = service.git
+                knownRepositories.map { it.copy(status = git.status(it.root)) }
+            } else service.repositories()
+        }
     }
 
     private fun showEmpty() {
         ++loadGeneration
-        selectedRoot = null; reviewContext = null; latestSnapshot = null; overviewRendered = null
+        selectedRoot = null; reviewContext = null; latestSnapshot = null
         insightsJob?.cancel(); insightsLoadedRoot = null
         resetLoads(); clearViews()
         if (reviewsView.isInitialized()) reviews.setRepository(null)
         workspace.clearSummaries()
-        status.text = "No Git repository found."
-        if (overviewView.isInitialized() || workspace.selectedId == "overview") renderEmptyOverview()
+        status.text = "No repository"
     }
 
-    private fun renderEmptyOverview() {
-        overview.removeAll()
-        overview.add(Ui.heading("Your next commit starts here"))
-        overview.add(Box.createVerticalStrut(JBUI.scale(12)))
-        overview.add(Ui.label("Open a Git project or a folder containing repositories."))
-        overview.add(Box.createVerticalStrut(JBUI.scale(8)))
-        overview.add(Ui.label("Repositories are discovered directly from .git, including worktrees.", true))
-        overview.revalidate(); overview.repaint()
-    }
-
-    private fun loadSelected() {
+    private fun loadSelected(scope: RepositoryRefreshScope) {
         val snapshot = repositories.selectedItem as? RepositorySnapshot ?: return
-        ++loadGeneration
+        val rootChanged = selectedRoot != snapshot.root
+        val fullRefresh = rootChanged || scope == RepositoryRefreshScope.REPOSITORY || latestSnapshot?.status?.branch != snapshot.status.branch
+        if (fullRefresh) {
+            ++loadGeneration
+            resetLoads()
+        } else {
+            workingLoadedRoot = null
+            // Let an in-flight diff finish, then read once more; repeated saves must not starve it.
+            workingReload = workingJob?.isActive == true
+        }
         selectedRoot = snapshot.root
         latestSnapshot = snapshot
         val context = snapshot.root to snapshot.remotes
         if (context != reviewContext) { if (reviewsView.isInitialized()) reviews.setRepository(snapshot); reviewContext = context }
-        resetLoads()
-        clearViews()
-        workspace.setSummary("overview", snapshot.status.branch)
+        if (rootChanged) clearViews()
+        workingChanges.setRepository(snapshot)
         workspace.setSummary("working", "${snapshot.status.staged} staged · ${snapshot.status.modified} modified")
         workspace.setSummary("reviews", "${snapshot.remotes.size} remotes")
-        listOf("history", "workflow", "branches", "reports").forEach { workspace.setSummary(it, "Not loaded") }
-        workspace.setSummary("insights", "Last 365 days")
-        status.text = "${snapshot.status.branch}  ·  ↑ ${snapshot.status.ahead}  ↓ ${snapshot.status.behind}"
+        if (fullRefresh) {
+            listOf("history", "workflow", "branches", "reports").forEach { workspace.setSummary(it, "Not loaded") }
+            workspace.setSummary("insights", "Last 365 days")
+        }
+        status.text = "↑${snapshot.status.ahead} ↓${snapshot.status.behind}"
+        status.toolTipText = "${snapshot.status.branch} · ${snapshot.status.ahead} outgoing · ${snapshot.status.behind} incoming · automatic sync"
         loadTab(workspace.selectedId)
     }
 
@@ -212,6 +222,7 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
     }
 
     private fun resetLoads() {
+        workingReload = false
         preparedHistory = null; renderedHistoryTabs.clear()
         detailsJob?.cancel(); refsJob?.cancel(); workingJob?.cancel(); insightsJob?.cancel()
         detailsJob = null; refsJob = null; workingJob = null; insightsJob = null
@@ -239,8 +250,8 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
             workspace.setSummary("reports", "${commits.size} loaded commits")
         }, onFailure = {
             if (!disposed && loadGeneration == generation) {
-                listOf("history", "workflow", "reports").forEach { id -> workspace.setSummary(id, "Refresh to retry") }
-                status.text = it.message ?: "History could not be loaded."
+                listOf("history", "workflow", "reports").forEach { id -> workspace.setSummary(id, "Resync from the Changes menu to retry") }
+                showError("History unavailable", it)
             }
         }) { HistorySnapshot.prepare(service.git.log(path, limit = limit, all = true), limit) }
     }
@@ -261,14 +272,17 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
         val path = selectedRoot ?: return
         if (disposed || workingLoadedRoot == path || workingJob?.isActive == true) return
         val generation = loadGeneration
-        workingJob = service.submit("Load working changes", onSuccess = { changes ->
+        workingReload = false
+        workingJob = service.submit("Load working changes", onSuccess = { snapshot ->
             if (disposed || selectedRoot != path || loadGeneration != generation) return@submit
-            workingLoadedRoot = path
-            workingChanges.setChanges(path, changes)
-            workspace.setSummary("working", "${changes.size} files")
+            workingJob = null
+            workingLoadedRoot = if (workingReload) null else path
+            workingChanges.setChanges(path, snapshot.changes, snapshot.stagedStats, snapshot.workingStats)
+            workspace.setSummary("working", "${snapshot.changes.size} files")
+            if (workingReload && workspace.selectedId == "working") loadTab("working")
         }, onFailure = {
-            if (!disposed && loadGeneration == generation) status.text = it.message ?: "Working changes could not be loaded."
-        }) { service.git.workingChanges(path) }
+            if (!disposed && loadGeneration == generation) showError("Changes unavailable", it)
+        }) { service.git.workingChangesWithStats(path) }
     }
 
     private fun loadRefs() {
@@ -283,8 +297,8 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
             workspace.setSummary("branches", "${refs.branches.size} branches")
         }, onFailure = {
             if (!disposed && loadGeneration == generation) {
-                workspace.setSummary("branches", "Refresh to retry")
-                status.text = it.message ?: "Repository refs could not be loaded."
+                workspace.setSummary("branches", "Resync from the Changes menu to retry")
+                showError("Refs unavailable", it)
             }
         }) {
             val git = service.git
@@ -304,7 +318,7 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
             workspace.setSummary("insights", "Local activity")
         }, onFailure = {
             if (!disposed && loadGeneration == generation && selectedRoot == path) {
-                insights.showError(it.message ?: "Could not load insights. Use Refresh to try again.")
+                insights.showError(it.message ?: "Could not load insights. Use Resync repository in the Changes menu to try again.")
             }
         }) {
             val history = service.git.insightsHistory(path)
@@ -312,68 +326,56 @@ class BetterGitPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI
         }
     }
 
-    private fun renderOverview(snapshot: RepositorySnapshot) {
-        overview.removeAll()
-        overview.add(DashboardStyles.eyebrow("REPOSITORY OVERVIEW"))
-        overview.add(Box.createVerticalStrut(JBUI.scale(6)))
-        overview.add(Ui.heading(snapshot.name))
-        overview.add(Box.createVerticalStrut(JBUI.scale(4)))
-        overview.add(Ui.label(snapshot.root.toString(), true))
-        overview.add(Box.createVerticalStrut(JBUI.scale(18)))
-        overview.add(JPanel(GridLayout(1, 3, JBUI.scale(10), 0)).apply {
-            isOpaque = false
-            maximumSize = java.awt.Dimension(Int.MAX_VALUE, JBUI.scale(110))
-            add(stat("Staged", snapshot.status.staged)); add(stat("Modified", snapshot.status.modified)); add(stat("Untracked", snapshot.status.untracked))
-        })
-        overview.add(Box.createVerticalStrut(JBUI.scale(16)))
-        overview.add(Ui.section("${snapshot.status.branch}  ·  ↑ ${snapshot.status.ahead}  ↓ ${snapshot.status.behind}", JPanel(BorderLayout(0, JBUI.scale(10))).apply {
-            add(Ui.label(if (snapshot.status.staged + snapshot.status.modified + snapshot.status.untracked == 0) "Working tree is clean." else "Your changes are ready to inspect."), BorderLayout.NORTH)
-            add(Ui.row(Ui.button("Commit…") { Ui.nativeAction(project, this@BetterGitPanel, "CheckinProject", "Git.CheckinProject") },
-                Ui.button("Push…") { Ui.nativeAction(project, this@BetterGitPanel, "Vcs.Push") },
-                Ui.button("Fetch") { fetch(snapshot.root) }), BorderLayout.CENTER)
-        }))
-        overview.add(Box.createVerticalStrut(JBUI.scale(12)))
-        overview.add(Ui.section("Code inspection", Ui.singleLineActions(
-            Ui.button("Inspect current line") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.InspectLine") },
-            Ui.button("Selection history") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.SelectionHistory") },
-            Ui.button("File history") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.FileHistory") },
-            Ui.button("File heatmap") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.ToggleHeatmap") },
-            Ui.button("Compare refs…") { compare(snapshot.root) },
-            Ui.button("Generate commit message…") { AiCommitDialog(project, snapshot.root).show() },
-        )))
-        overview.add(Box.createVerticalStrut(JBUI.scale(12)))
-        overview.add(Ui.label(if (snapshot.remotes.isEmpty()) "No remote · local features work offline." else "${snapshot.remotes.size} remotes · ${snapshot.remotes.joinToString { it.name }}", true))
-        overview.add(Box.createVerticalStrut(JBUI.scale(12)))
-        overview.add(Box.createVerticalGlue())
-        overview.components.filterIsInstance<javax.swing.JComponent>().forEach { it.alignmentX = 0f }
-        overview.revalidate(); overview.repaint()
+    private fun showRepositoryActions(anchor: JButton) {
+        val snapshot = latestSnapshot
+        JPopupMenu().apply {
+            fun action(title: String, enabled: Boolean = snapshot != null, run: () -> Unit) {
+                add(JMenuItem(title).apply { isEnabled = enabled; addActionListener { run() } })
+            }
+            action("Push…") { Ui.nativeAction(project, this@BetterGitPanel, "Vcs.Push") }
+            action("Fetch") { snapshot?.let { fetch(it.root) } }
+            action("Generate commit message…") { snapshot?.let { AiCommitDialog(project, it.root).show() } }
+            addSeparator()
+            action("Inspect current line") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.InspectLine") }
+            action("Selection history") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.SelectionHistory") }
+            action("File history") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.FileHistory") }
+            action("File heatmap") { Ui.nativeAction(project, this@BetterGitPanel, "BetterGit.ToggleHeatmap") }
+            action("Compare refs…") { snapshot?.let { compare(it.root) } }
+            addSeparator()
+            action("Resync repository", true) { refresh() }
+        }.show(anchor, 0, anchor.height)
     }
 
-    private fun stat(title: String, count: Int) = DashboardStyles.card(BorderLayout(0, JBUI.scale(6)), count > 0).apply {
-        add(DashboardStyles.eyebrow(title.uppercase()), BorderLayout.NORTH)
-        add(Ui.label(count.toString()).apply {
-            font = font.deriveFont(Font.BOLD, font.size2D + 14)
-            foreground = if (count > 0) DashboardStyles.accent else Ui.muted
-        }, BorderLayout.CENTER)
+    private fun suspendWork() {
+        ++loadGeneration
+        refreshJob?.cancel(); refreshJob = null
+        refreshQueue.finished()
+        refreshQueue.request(RepositoryRefreshScope.REPOSITORY)
+        resetLoads()
     }
 
     private fun fetch(root: Path) {
-        status.text = "Fetching remotes…"
-        service.submit("Fetch remotes", onSuccess = { refresh() }, onFailure = { status.text = it.message ?: "Fetch failed." }) { service.git.fetch(root) }
+        status.text = "Fetching…"
+        service.submit("Fetch remotes", onSuccess = { refresh() }, onFailure = { showError("Fetch failed", it) }) { service.git.fetch(root) }
+    }
+
+    private fun showError(title: String, failure: Throwable) {
+        status.text = title
+        status.toolTipText = failure.message ?: title
     }
 
     private fun compare(root: Path) {
         val base = Messages.showInputDialog(project, "Base revision (branch, tag or commit):", "Compare Revisions", null) ?: return
         val head = Messages.showInputDialog(project, "Target revision (branch, tag or commit):", "Compare Revisions", null, "HEAD", null) ?: return
         service.submit("Compare revisions", onSuccess = { patch ->
-            FileEditorManager.getInstance(project).openFile(LightVirtualFile("comparison.diff", patch).apply { isWritable = false }, true)
+            OpenFileDescriptor(project, LightVirtualFile("comparison.diff", patch).apply { isWritable = false }).navigate(true)
         }) { service.git.diff(root, base, head) }
     }
 
     override fun dispose() {
         disposed = true; ++loadGeneration
-        refreshJob?.cancel(); refreshDebounce?.cancel(); resetLoads()
-        latestSnapshot = null; overviewRendered = null
+        refreshJob?.cancel(); resetLoads()
+        latestSnapshot = null
         clearViews()
     }
 }

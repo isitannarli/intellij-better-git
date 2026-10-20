@@ -48,7 +48,7 @@ class WorkingChangesBadgeTest : BasePlatformTestCase() {
         // The headless platform window discards icons and titles. Record only those presentation
         // writes, delegating all other behavior to the real registered platform tool window.
         window = PresentationWindow(manager.registerToolWindow(RegisterToolWindowTask.notClosable("Better Git badge test")))
-        window.setIcon(IconLoader.getIcon("/icons/betterGit.svg", javaClass))
+        window.setIcon(IconLoader.getIcon("/icons/workingChanges.svg", javaClass))
         BetterGitToolWindowFactory().init(window)
     }
 
@@ -124,7 +124,8 @@ class WorkingChangesBadgeTest : BasePlatformTestCase() {
 
     private fun refreshChanges() {
         PlatformTestUtil.callOnBgtSynchronously({
-            VfsUtil.markDirtyAndRefresh(false, true, false, virtualRoot)
+            // Include newly created descendants before asking the native change-list manager to scan.
+            VfsUtil.markDirtyAndRefresh(false, true, true, virtualRoot)
         }, 30)
         VcsDirtyScopeManager.getInstance(project).dirDirtyRecursively(virtualRoot)
         PlatformTestUtil.callOnBgtSynchronously({

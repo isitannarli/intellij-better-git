@@ -60,7 +60,10 @@ class FileHeatmapService(private val project: Project) : Disposable {
         val connection = ApplicationManager.getApplication().messageBus.connect(this)
         connection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { refreshAll() })
         connection.subscribe(FileDocumentManagerListener.TOPIC, object : FileDocumentManagerListener {
-            override fun afterDocumentSaved(document: Document) = refreshAll(document)
+            override fun beforeDocumentSaving(document: Document) {
+                // Queue the refresh after saving, including on IDEs without the after-save callback.
+                ApplicationManager.getApplication().invokeLater { refreshAll(document) }
+            }
             override fun fileContentReloaded(file: VirtualFile, document: Document) = refreshAll(document)
         })
     }

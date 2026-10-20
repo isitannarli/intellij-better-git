@@ -28,6 +28,120 @@ class GitClient(executable: String = "git") {
         runner.run(root, listOf("status", "--porcelain=v2", "--untracked-files=all", "-z")).stdout,
     )
 
+    fun workingChangesWithStats(root: Path): WorkingChangesSnapshot {
+        val changes = workingChanges(root)
+        if (changes.isEmpty()) return WorkingChangesSnapshot(changes, emptyMap(), emptyMap())
+        val arguments = listOf("diff", "--numstat", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all")
+        val staged = if (changes.any { it.staged && !it.submodule })
+            GitNumstatParser.parse(runner.run(root, arguments + listOf("--cached", "--")).stdout) else emptyMap()
+        val working = if (changes.any { it.unstaged && !it.untracked && !it.conflicted && !it.submodule })
+            GitNumstatParser.parse(runner.run(root, arguments + "--").stdout).toMutableMap() else mutableMapOf()
+        val counter = UntrackedLineCounter()
+        val realRoot = root.toRealPath()
+        changes.filter { it.untracked }.forEach { change -> counter.count(realRoot, change.path)?.let { working[change.path] = it } }
+        // Conflicts and submodule pointer changes do not have meaningful text-line totals.
+        val supported = changes.filterNot { it.conflicted || it.submodule }.map { it.path }.toSet()
+        return WorkingChangesSnapshot(changes, staged.filterKeys { it in supported }, working.filterKeys { it in supported })
+    }
+
+    fun stageChanges(root: Path, selected: List<WorkingChange>) {
+        val current = checkedChanges(root, selected)
+        runWithPaths(root, listOf("add", "--all"), current.map { it.path })
+    }
+
+    /** Commit the index as-is unless the user explicitly chose Stage All and Commit. */
+    fun commitChanges(root: Path, message: String, stageAll: Boolean = false, expectedBranch: String? = null) {
+        require(message.isNotBlank() && '\u0000' !in message && message.toByteArray(Charsets.UTF_8).size <= 1_048_576) {
+            "Enter a non-empty commit message smaller than 1 MiB, without NUL characters."
+        }
+        if (expectedBranch != null) require(status(root).branch == expectedBranch) {
+            "The current branch changed. Review the changes and commit again."
+        }
+        val changes = workingChanges(root)
+        require(changes.none { it.conflicted }) { "Resolve conflicts before committing." }
+        require(changes.isNotEmpty()) { "There are no changes to commit." }
+        if (stageAll) {
+            require(changes.none { it.submodule }) { "Stage submodule changes through the IDE before committing." }
+            runner.run(root, listOf("add", "--all", "--", "."))
+        } else require(changes.any { it.staged }) { "Stage changes before committing." }
+        val messageFile = Files.createTempFile("better-git-commit-", ".txt")
+        try {
+            Files.writeString(messageFile, message)
+            // Respect repository hooks, signing, and identity settings. Never amend or stage implicitly.
+            runner.run(root, listOf("commit", "--file=$messageFile", "--cleanup=whitespace"),
+                timeout = Duration.ofMinutes(2), enableHooks = true)
+        } finally { Files.deleteIfExists(messageFile) }
+    }
+
+    fun unstageChanges(root: Path, selected: List<WorkingChange>) {
+        val current = checkedChanges(root, selected)
+        require(current.all { it.staged }) { "Select staged changes to unstage." }
+        val command = if (hasHead(root)) listOf("reset", "--quiet", "HEAD") else listOf("rm", "--cached", "--quiet", "--force")
+        runWithPaths(root, command, current.flatMap { listOfNotNull(it.oldPath, it.path) })
+    }
+
+    /** Restore only the working copy; a partially staged file keeps its index content. */
+    fun discardChanges(root: Path, selected: List<WorkingChange>) {
+        val current = checkedChanges(root, selected)
+        require(current.all { it.unstaged && !it.untracked && !it.conflicted }) { "Select tracked, non-conflicting working changes to discard." }
+        runWithPaths(root, listOf("restore", "--worktree"), current.map { it.path })
+    }
+
+    fun stashChanges(root: Path, selected: List<WorkingChange>, message: String) {
+        val current = checkedChanges(root, selected)
+        require(current.none { it.conflicted }) { "Resolve conflicts before stashing files." }
+        require(hasHead(root)) { "Create an initial commit before stashing files." }
+        require(message.isNotBlank() && message.length <= 4096 && '\u0000' !in message) { "A stash message of 1–4096 characters is required" }
+        // Explicit literal pathspecs protect unusual filenames without breaking stash's internal cleanup glob.
+        val selectedPaths = current.flatMap { listOfNotNull(it.oldPath, it.path) }.toSet()
+        val paths = if (current.any { it.indexStatus == 'D' || it.indexStatus == 'R' }) {
+            // Stash's cleanup rejects exact paths removed from the index (deletions / rename origins).
+            // Select the repository and exclude every other dirty path, so those removals are included.
+            listOf(":(top)") + workingChanges(root).flatMap { listOfNotNull(it.oldPath, it.path) }
+                .distinct().filterNot { it in selectedPaths }.map { ":(exclude,literal)$it" }
+        } else selectedPaths.map { ":(literal)$it" }
+        runWithPaths(root, listOf("stash", "push", "--include-untracked", "--message", message), paths, literalPathspecs = false)
+    }
+
+    /** Delete selected file entries only. Never recursively delete directories or follow symlinks. */
+    fun deleteWorkingFiles(root: Path, selected: List<WorkingChange>) {
+        val current = checkedChanges(root, selected)
+        require(current.none { it.conflicted }) { "Resolve conflicts before deleting files." }
+        val repository = root.toRealPath()
+        val files = current.map { change ->
+            val file = repository.resolve(change.path).normalize()
+            require(file.startsWith(repository) && file.parent.toRealPath().startsWith(repository)) { "Path resolves outside the repository" }
+            require(Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) { "Only existing files can be deleted." }
+            file
+        }
+        files.forEach(Files::delete)
+    }
+
+    private fun checkedChanges(root: Path, selected: List<WorkingChange>): List<WorkingChange> {
+        require(selected.isNotEmpty()) { "Select at least one changed file." }
+        selected.forEach { change ->
+            listOfNotNull(change.path, change.oldPath).forEach { path ->
+                validatePath(path)
+                require(path.split('/').none { it.isEmpty() || it == "." || it.equals(".git", true) }) { "Invalid working file path" }
+            }
+        }
+        val current = workingChanges(root).associateBy { it.path }
+        return selected.distinctBy { it.path }.map { expected ->
+            val actual = current[expected.path]
+            require(actual == expected) { "The selected files changed. Review the updated list and try again." }
+            require(!actual.submodule) { "Use the IDE's Git actions for submodules." }
+            actual
+        }
+    }
+
+    private fun runWithPaths(root: Path, arguments: List<String>, paths: List<String>, literalPathspecs: Boolean = true) {
+        val pathspec = Files.createTempFile("better-git-paths-", ".txt")
+        try {
+            Files.writeString(pathspec, paths.distinct().joinToString("\u0000", postfix = "\u0000"))
+            runner.run(root, arguments + listOf("--pathspec-from-file=$pathspec", "--pathspec-file-nul"), literalPathspecs = literalPathspecs)
+        } finally { Files.deleteIfExists(pathspec) }
+    }
+
     fun workingFileDiff(root: Path, change: WorkingChange, staged: Boolean): WorkingFileDiff {
         validatePath(change.path)
         change.oldPath?.let(::validatePath)
@@ -190,21 +304,7 @@ class GitClient(executable: String = "git") {
         )
         resolved.parents.firstOrNull()?.let { arguments += it }
         arguments += listOf(resolved.hash, "--")
-        val tokens = runner.run(root, arguments).stdout.split('\u0000')
-        val stats = mutableMapOf<String, FileLineStats>()
-        var index = 0
-        while (index < tokens.size) {
-            val entry = tokens[index++]
-            if (entry.isEmpty()) continue
-            val fields = entry.split('\t', limit = 3)
-            require(fields.size == 3) { "Invalid Git line statistics" }
-            val path = if (fields[2].isEmpty()) {
-                require(index + 1 < tokens.size) { "Incomplete rename statistics" }
-                index++ 
-                tokens[index++]
-            } else fields[2]
-            stats[path] = FileLineStats(fields[0].toLongOrNull(), fields[1].toLongOrNull())
-        }
+        val stats = GitNumstatParser.parse(runner.run(root, arguments).stdout)
         val message = runner.run(root, listOf("log", "-1", "-z", "--format=%B", resolved.hash, "--"))
             .stdout.removeSuffix("\u0000").trimEnd()
         return CommitInspection(resolved, message, changes, stats)

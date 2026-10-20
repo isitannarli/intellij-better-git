@@ -17,6 +17,7 @@ internal class WorkspaceTabs(
     onSelected: (String) -> Unit,
 ) : JPanel(BorderLayout()) {
     // The 262 tab delegate can hide JBTabbedPane labels; use native title-based tabs.
+    // Wrap narrow layouts so every view stays accessible without the IDE's overflow dropdown.
     private val tabs = JTabbedPane(JTabbedPane.TOP, JTabbedPane.WRAP_TAB_LAYOUT)
     private val slots = pages.map { JPanel(BorderLayout()) }
     private val mounted = mutableSetOf<Int>()
